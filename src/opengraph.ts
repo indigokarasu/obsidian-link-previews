@@ -1,0 +1,8 @@
+export interface OpenGraphMetadata { title?: string; description?: string; image?: string; site_name?: string; }
+function decodeHtml(value: string): string { return value.replace(/&(#x?[\da-f]+|amp|quot|apos|lt|gt);/gi, (_, entity: string) => { const named: Record<string, string> = { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>' }; if (named[entity.toLowerCase()]) return named[entity.toLowerCase()]; const n = entity[0].toLowerCase() === 'x' ? parseInt(entity.slice(1), 16) : parseInt(entity.slice(1), 10); return Number.isFinite(n) ? String.fromCodePoint(n) : _; }); }
+export function parseOpenGraph(html: string, fallback: string): OpenGraphMetadata {
+  const out: OpenGraphMetadata = {}; const tags = html.match(/<meta\b[^>]*>/gi) ?? [];
+  for (const tag of tags) { const attrs: Record<string, string> = {}; for (const m of tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) attrs[m[1].toLowerCase()] = m[2] ?? m[3] ?? m[4]; const key = (attrs.property ?? attrs.name)?.toLowerCase(); const content = attrs.content; if (!key || content === undefined) continue; const field = key.startsWith('og:') ? key.slice(3) : key; if (['title', 'description', 'image', 'site_name'].includes(field) && !out[field as keyof OpenGraphMetadata]) out[field as keyof OpenGraphMetadata] = decodeHtml(content.trim()); }
+  const title = html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]; if (!out.title) out.title = title ? decodeHtml(title.replace(/<[^>]+>/g, '').trim()) : fallback;
+  if (out.image) { try { out.image = new URL(out.image, fallback).href; } catch { delete out.image; } } return out;
+}

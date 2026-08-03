@@ -1,28 +1,72 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, requestUrl, Setting, TFile, Platform } from 'obsidian';
+import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Platform, requestUrl, Setting, TFile } from 'obsidian';
+import { OpenGraphMetadata, parseOpenGraph } from './opengraph';
 
-interface Settings { rendererEndpoint: string; attachmentFolder: string; staleDays: number; }
-const DEFAULTS: Settings = { rendererEndpoint: 'http://127.0.0.1:8765', attachmentFolder: '_link-previews', staleDays: 30 };
-const marker = 'link-previews:screenshot';
-
-function hash(input: string): string { let h = 2166136261; for (let i=0;i<input.length;i++) h = Math.imul(h ^ input.charCodeAt(i), 16777619); return (h>>>0).toString(16).padStart(8,'0'); }
-function urlFromLine(line: string): string | null { const m = line.match(/https?:\/\/[^\s)>]+/i); return m ? m[0].replace(/[.,;]+$/, '') : null; }
-function markerFor(source: string, image: string, captured: string): string { return `<!-- ${marker}\nurl=${source}\nimage=${image}\ncaptured=${captured}\n-->`; }
-function parseMarker(content: string, source: string): string | null { const re = new RegExp(`<!-- ${marker}\\nurl=${source.replace(/[.*+?^${}()|[\\]\\]/g,'\\$&')}\\nimage=([^\\n]+)`); return content.match(re)?.[1] ?? null; }
+declare const require: ((name: string) => any) | undefined;
+interface Settings { rendererEndpoint: string; attachmentFolder: string; }
+const DEFAULTS: Settings = { rendererEndpoint: 'http://127.0.0.1:8765', attachmentFolder: '_link-previews' };
+const MARKER = 'link-previews:screenshot';
+const hash = (input: string) => { let h = 2166136261; for (let i = 0; i < input.length; i++) h = Math.imul(h ^ input.charCodeAt(i), 16777619); return (h >>> 0).toString(16).padStart(8, '0'); };
+const urlFromLine = (line: string) => line.match(/https?:\/\/[^\s)>]+/i)?.[0].replace(/[.,;]+$/, '') ?? null;
+const markerFor = (url: string, image: string) => `<!-- ${MARKER}\nurl=${url}\nimage=${image}\ncaptured=${new Date().toISOString()}\n-->`;
+function markerImage(content: string, url: string): string | null {
+  const escaped = url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return content.match(new RegExp(`<!-- ${MARKER}\\nurl=${escaped}\\nimage=([^\\n]+)`))?.[1] ?? null;
+}
 
 export default class LinkPreviewsPlugin extends Plugin {
- settings!: Settings;
- async onload() { this.settings = Object.assign({}, DEFAULTS, await this.loadData());
-  this.addSettingTab(new LinkPreviewSettings(this.app, this));
-  this.addCommand({id:'enrich-url-screenshot',name:'Enrich URL with webpage screenshot',editorCallback:(e,v)=>this.enrich(e,v)});
-  this.addCommand({id:'refresh-url-screenshot',name:'Refresh URL screenshot',editorCallback:(e,v)=>this.enrich(e,v,true)});
-  this.registerMarkdownPostProcessor((el,ctx)=>this.renderCards(el,ctx));
- }
- async enrich(editor: Editor, view: MarkdownView | any, refresh=false) { if (Platform.isMobile) { new Notice('Screenshot generation is available on desktop only.'); return; } const line=editor.getLine(editor.getCursor().line), url=urlFromLine(line); if(!url){new Notice('Place the cursor on a line containing an HTTP(S) URL.');return;} const file=ctxFile(view); if(!file)return;
-  const key=hash(url+'|'+this.settings.rendererEndpoint); const path=`${this.settings.attachmentFolder}/${key}.png`; try { const response=await requestUrl({url:`${this.settings.rendererEndpoint.replace(/\/$/,'')}/screenshot`,method:'POST',body:JSON.stringify({url}),headers:{'content-type':'application/json'}}); if(response.status<200||response.status>=300) throw new Error(`renderer returned ${response.status}`); const data=response.arrayBuffer; await this.app.vault.createFolder(this.settings.attachmentFolder).catch(()=>{}); const existing=this.app.vault.getAbstractFileByPath(path); if(existing instanceof TFile) await this.app.vault.modifyBinary(existing,data); else await this.app.vault.createBinary(path,data); const clean=editor.getValue(); const image=`![Webpage preview](${path})`; const m=markerFor(url,path,new Date().toISOString()); if(!clean.includes(m)) editor.replaceRange(`\n\n${image}\n${m}\n`,{line:editor.getCursor().line+1,ch:0}); new Notice(refresh?'Screenshot refreshed.':'Screenshot saved to vault.'); } catch(e) { new Notice(`Screenshot unavailable: ${e instanceof Error?e.message:'renderer error'}`); }
- }
- async renderCards(el: HTMLElement, ctx: any) { const links=Array.from(el.querySelectorAll('a.external-link')) as HTMLAnchorElement[]; for(const a of links){const url=a.href; const source=ctx.sourcePath?await this.app.vault.read(this.app.vault.getAbstractFileByPath(ctx.sourcePath) as TFile):''; const image=parseMarker(source,url); if(image && this.app.vault.getAbstractFileByPath(image)){ this.card(a,url,image,undefined); continue; } this.fetchOg(url).then(meta=>this.card(a,url,undefined,meta)).catch(()=>{}); } }
- async fetchOg(url:string):Promise<Record<string,string>> { const r=await requestUrl({url,method:'GET'}); const html=r.text; const out:Record<string,string>={}; for(const p of ['title','description','image','site_name']) { const m=html.match(new RegExp(`<meta[^>]+(?:property|name)=["'](?:og:)?${p}["'][^>]+content=["']([^"']+)`, 'i')); if(m) out[p]=m[1]; } out.title ||= html.match(/<title[^>]*>([^<]+)/i)?.[1] || url; return out; }
- card(a:HTMLAnchorElement,url:string,image?:string,meta?:Record<string,string>) { const div=a.parentElement?.createDiv({cls:'link-preview-card'}); if(!div)return; div.createEl('a',{text:meta?.title||'Webpage preview',href:url,cls:'link-preview-title'}); if(image) div.createEl('img',{attr:{src:this.app.vault.getResourcePath(this.app.vault.getAbstractFileByPath(image) as TFile),alt:'Webpage screenshot'}}); else if(meta?.image) div.createEl('img',{attr:{src:meta.image,alt:''}}); if(meta?.description) div.createEl('p',{text:meta.description,cls:'link-preview-description'}); }
+  settings!: Settings;
+  async onload() {
+    this.settings = Object.assign({}, DEFAULTS, await this.loadData());
+    this.addSettingTab(new LinkPreviewSettings(this.app, this));
+    this.addCommand({ id: 'enrich-url-screenshot', name: 'Enrich URL with webpage screenshot', editorCallback: (editor, view) => void this.enrich(editor, view as MarkdownView) });
+    this.addCommand({ id: 'refresh-url-screenshot', name: 'Refresh URL screenshot', editorCallback: (editor, view) => void this.enrich(editor, view as MarkdownView, true) });
+    this.addCommand({ id: 'test-screenshot-helper', name: 'Test screenshot helper connection', callback: () => void this.testHelper() });
+    this.registerMarkdownPostProcessor((el, ctx) => this.renderCards(el, ctx));
+  }
+
+  private async enrich(editor: Editor, view: MarkdownView, refresh = false) {
+    if (Platform.isMobile) { new Notice('Screenshot capture is available on Obsidian Desktop only.'); return; }
+    const url = urlFromLine(editor.getLine(editor.getCursor().line));
+    if (!url) { new Notice('Place the cursor on a line containing an HTTP(S) URL.'); return; }
+    const imagePath = `${this.settings.attachmentFolder}/${hash(url)}.png`;
+    try {
+      const data = await this.capturePage(url);
+      await this.app.vault.createFolder(this.settings.attachmentFolder).catch(() => undefined);
+      const existing = this.app.vault.getAbstractFileByPath(imagePath);
+      if (existing instanceof TFile) await this.app.vault.modifyBinary(existing, data); else await this.app.vault.createBinary(imagePath, data);
+      if (!editor.getValue().includes(markerFor(url, imagePath))) editor.replaceRange(`\n\n![Webpage preview](${imagePath})\n${markerFor(url, imagePath)}\n`, { line: editor.getCursor().line + 1, ch: 0 });
+      new Notice(refresh ? 'Screenshot refreshed.' : 'Screenshot saved to the vault.');
+    } catch (error) { new Notice(`Screenshot unavailable: ${error instanceof Error ? error.message : 'Desktop capture is not supported in this runtime.'}`); }
+  }
+
+  private async testHelper() { try { const r = await requestUrl({ url: `${this.settings.rendererEndpoint.replace(/\/$/, '')}/health`, method: 'GET' }); if (r.status < 200 || r.status >= 300) throw new Error(`helper returned ${r.status}`); new Notice('Screenshot helper is reachable.'); } catch (e) { new Notice(`Screenshot helper unavailable. Start helper/server.mjs separately. ${e instanceof Error ? e.message : 'connection error'}`); } }
+  private async capturePage(url: string): Promise<ArrayBuffer> {
+    const response = await requestUrl({ url: `${this.settings.rendererEndpoint.replace(/\/$/, '')}/screenshot`, method: 'POST', body: JSON.stringify({ url }), headers: { 'content-type': 'application/json' } });
+    if (response.status < 200 || response.status >= 300) throw new Error(`renderer returned ${response.status}`);
+    return response.arrayBuffer;
+  }
+
+  private async renderCards(el: HTMLElement, ctx: any) {
+    const file = ctx.sourcePath ? this.app.vault.getAbstractFileByPath(ctx.sourcePath) : null;
+    const source = file instanceof TFile ? await this.app.vault.read(file) : '';
+    for (const anchor of Array.from(el.querySelectorAll('a.external-link[href], a.internal-link[href^="http"]')) as HTMLAnchorElement[]) {
+      const url = anchor.href;
+      const image = markerImage(source, url);
+      if (image && this.app.vault.getAbstractFileByPath(image) instanceof TFile) { this.card(anchor, url, image); continue; }
+      void this.fetchOg(url).then(meta => this.card(anchor, url, undefined, meta)).catch(() => undefined);
+    }
+  }
+  private async fetchOg(url: string): Promise<OpenGraphMetadata> { const response = await requestUrl({ url, method: 'GET' }); return parseOpenGraph(response.text, url); }
+  private card(anchor: HTMLAnchorElement, url: string, image?: string, meta?: OpenGraphMetadata) {
+    if (anchor.parentElement?.querySelector('.link-preview-card')) return;
+    const card = anchor.parentElement?.createDiv({ cls: 'link-preview-card' }); if (!card) return;
+    card.createEl('a', { text: meta?.title || 'Webpage preview', href: url, cls: 'link-preview-title' });
+    if (image) { const file = this.app.vault.getAbstractFileByPath(image); if (file instanceof TFile) card.createEl('img', { attr: { src: this.app.vault.getResourcePath(file), alt: 'Webpage screenshot' } }); }
+    else if (meta?.image) card.createEl('img', { attr: { src: meta.image, alt: '' } });
+    if (meta?.description) card.createEl('p', { text: meta.description, cls: 'link-preview-description' });
+  }
 }
-function ctxFile(v:MarkdownView):TFile|null{return v.file;}
-class LinkPreviewSettings extends PluginSettingTab { constructor(app:App,private plugin:LinkPreviewsPlugin){super(app,plugin);} display(){const e=this.containerEl;e.empty();e.createEl('h2',{text:'Link Previews'});new Setting(e).setName('Screenshot helper endpoint').setDesc('Local HTTP helper; never used on mobile.').addText(t=>t.setValue(this.plugin.settings.rendererEndpoint).onChange(async v=>{this.plugin.settings.rendererEndpoint=v.trim();await this.plugin.saveData(this.plugin.settings);}));new Setting(e).setName('Attachment folder').addText(t=>t.setValue(this.plugin.settings.attachmentFolder).onChange(async v=>{this.plugin.settings.attachmentFolder=v.trim()||DEFAULTS.attachmentFolder;await this.plugin.saveData(this.plugin.settings);}));new Setting(e).setName('Stale screenshot age (days)').addText(t=>t.setValue(String(this.plugin.settings.staleDays)).onChange(async v=>{this.plugin.settings.staleDays=Math.max(1,Number(v)||DEFAULTS.staleDays);await this.plugin.saveData(this.plugin.settings);}));}}
+class LinkPreviewSettings extends PluginSettingTab {
+  constructor(app: App, private plugin: LinkPreviewsPlugin) { super(app, plugin); }
+  display() { this.containerEl.empty(); this.containerEl.createEl('h2', { text: 'Link Previews' }); new Setting(this.containerEl).setName('Screenshot helper endpoint').setDesc('Optional helper; the plugin does not start it. Start helper/server.mjs separately, then use Test screenshot helper connection. Desktop only.').addText(t => t.setValue(this.plugin.settings.rendererEndpoint).onChange(async value => { this.plugin.settings.rendererEndpoint = value.trim(); await this.plugin.saveData(this.plugin.settings); })); new Setting(this.containerEl).setName('Attachment folder').setDesc('Vault folder for durable desktop screenshots; mobile only consumes these files.').addText(t => t.setValue(this.plugin.settings.attachmentFolder).onChange(async value => { this.plugin.settings.attachmentFolder = value.trim() || DEFAULTS.attachmentFolder; await this.plugin.saveData(this.plugin.settings); })); }
+}

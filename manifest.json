@@ -1,7 +1,7 @@
 {
   "id": "obsidian-link-previews",
   "name": "Link Previews",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAppVersion": "1.4.0",
   "description": "OpenGraph cards and durable webpage screenshot previews for links.",
   "author": "Indigo Karasu",
