@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseOpenGraph } from '../src/opengraph.ts';
+import { parseOpenGraph } from '../.test-dist/opengraph.mjs';
 
 test('parses OpenGraph regardless of attribute order and quoting', () => {
   const html = `<title>Fallback</title><meta content='A &amp; B' property='og:description'><meta name="og:title" content="Example"><meta property="og:image" content="/cover.png">`;
