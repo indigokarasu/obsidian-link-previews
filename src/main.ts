@@ -1,6 +1,4 @@
 import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Platform, requestUrl, Setting, TFile } from 'obsidian';
-import { Decoration, EditorView, ViewPlugin, ViewUpdate, WidgetType } from '@codemirror/view';
-import { RangeSetBuilder } from '@codemirror/state';
 import { OpenGraphMetadata, parseOpenGraph } from './opengraph';
 
 declare const require: ((name: string) => any) | undefined;
@@ -18,36 +16,6 @@ function markerInfo(content: string, url: string): { image: string; captured: nu
   return { image: match[1], captured: Number.isFinite(captured) ? captured : 0 };
 }
 
-class PreviewWidget extends WidgetType {
-  constructor(private readonly plugin: LinkPreviewsPlugin, private readonly url: string, private readonly file: TFile | null) { super(); }
-  eq(other: PreviewWidget) { return other.url === this.url; }
-  toDOM() {
-    const el = document.createElement('div'); el.className = 'link-preview-card link-preview-live';
-    const title = document.createElement('a'); title.className = 'link-preview-title'; title.href = this.url; title.textContent = 'Webpage preview'; el.appendChild(title);
-    void this.plugin.populateLiveCard(el, this.url, this.file);
-    return el;
-  }
-  ignoreEvent() { return false; }
-}
-
-class LivePreviewPreviews {
-  decorations: any;
-  constructor(private readonly view: EditorView, private readonly plugin: LinkPreviewsPlugin) { this.decorations = this.build(); }
-  update(update: ViewUpdate) { if (update.docChanged || update.viewportChanged || update.selectionSet) this.decorations = this.build(); }
-  build() {
-    const builder = new RangeSetBuilder<any>();
-    for (const { from, to } of this.view.visibleRanges) {
-      const text = this.view.state.sliceDoc(from, to);
-      const re = /https?:\/\/[^\s)>]+/gi; let match: RegExpExecArray | null;
-      while ((match = re.exec(text))) {
-        const url = match[0].replace(/[.,;]+$/, ''); const pos = from + match.index + url.length;
-        builder.add(pos, pos, Decoration.widget({ widget: new PreviewWidget(this.plugin, url, null), side: 1 }));
-      }
-    }
-    return builder.finish();
-  }
-}
-
 export default class LinkPreviewsPlugin extends Plugin {
   settings!: Settings;
   private captures = new Map<string, Promise<string>>();
@@ -57,10 +25,32 @@ export default class LinkPreviewsPlugin extends Plugin {
     this.addCommand({ id: 'enrich-url-screenshot', name: 'Enrich URL with webpage screenshot', editorCallback: (editor, view) => void this.enrich(editor, view as MarkdownView) });
     this.addCommand({ id: 'refresh-url-screenshot', name: 'Refresh URL screenshot', editorCallback: (editor, view) => void this.enrich(editor, view as MarkdownView, true) });
     this.registerMarkdownPostProcessor((el, ctx) => this.renderCards(el, ctx));
-    const plugin = this;
-    this.registerEditorExtension(ViewPlugin.fromClass(class extends LivePreviewPreviews {
-      constructor(view: EditorView) { super(view, plugin); }
-    }));
+    this.registerEvent(this.app.workspace.on('layout-change', () => this.observeLivePreviewEditors()));
+    this.observeLivePreviewEditors();
+  }
+
+  private observeLivePreviewEditors() {
+    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+      const container = leaf.view.containerEl;
+      if ((container as any).__linkPreviewObserver) continue;
+      const observer = new MutationObserver(() => this.decorateLivePreview(container));
+      observer.observe(container, { childList: true, subtree: true });
+      (container as any).__linkPreviewObserver = observer;
+      this.register(() => observer.disconnect());
+      this.decorateLivePreview(container);
+    }
+  }
+
+  private decorateLivePreview(container: HTMLElement) {
+    for (const line of Array.from(container.querySelectorAll('.cm-line'))) {
+      if (line.querySelector('.link-preview-live')) continue;
+      const url = urlFromLine(line.textContent || '');
+      if (!url) continue;
+      const card = document.createElement('div'); card.className = 'link-preview-card link-preview-live';
+      const title = document.createElement('a'); title.className = 'link-preview-title'; title.href = url; title.textContent = 'Webpage preview'; card.appendChild(title);
+      line.appendChild(card);
+      void this.populateLiveCard(card, url, null);
+    }
   }
 
   private async enrich(editor: Editor, view: MarkdownView, refresh = false) {
