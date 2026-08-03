@@ -2,8 +2,8 @@ import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Platform, 
 import { OpenGraphMetadata, parseOpenGraph } from './opengraph';
 
 declare const require: ((name: string) => any) | undefined;
-interface Settings { rendererEndpoint: string; attachmentFolder: string; }
-const DEFAULTS: Settings = { rendererEndpoint: 'http://127.0.0.1:8765', attachmentFolder: '_link-previews' };
+interface Settings { attachmentFolder: string; }
+const DEFAULTS: Settings = { attachmentFolder: '_link-previews' };
 const MARKER = 'link-previews:screenshot';
 const hash = (input: string) => { let h = 2166136261; for (let i = 0; i < input.length; i++) h = Math.imul(h ^ input.charCodeAt(i), 16777619); return (h >>> 0).toString(16).padStart(8, '0'); };
 const urlFromLine = (line: string) => line.match(/https?:\/\/[^\s)>]+/i)?.[0].replace(/[.,;]+$/, '') ?? null;
@@ -20,7 +20,7 @@ export default class LinkPreviewsPlugin extends Plugin {
     this.addSettingTab(new LinkPreviewSettings(this.app, this));
     this.addCommand({ id: 'enrich-url-screenshot', name: 'Enrich URL with webpage screenshot', editorCallback: (editor, view) => void this.enrich(editor, view as MarkdownView) });
     this.addCommand({ id: 'refresh-url-screenshot', name: 'Refresh URL screenshot', editorCallback: (editor, view) => void this.enrich(editor, view as MarkdownView, true) });
-    this.addCommand({ id: 'test-screenshot-helper', name: 'Test screenshot helper connection', callback: () => void this.testHelper() });
+
     this.registerMarkdownPostProcessor((el, ctx) => this.renderCards(el, ctx));
   }
 
@@ -39,11 +39,13 @@ export default class LinkPreviewsPlugin extends Plugin {
     } catch (error) { new Notice(`Screenshot unavailable: ${error instanceof Error ? error.message : 'Desktop capture is not supported in this runtime.'}`); }
   }
 
-  private async testHelper() { try { const r = await requestUrl({ url: `${this.settings.rendererEndpoint.replace(/\/$/, '')}/health`, method: 'GET' }); if (r.status < 200 || r.status >= 300) throw new Error(`helper returned ${r.status}`); new Notice('Screenshot helper is reachable.'); } catch (e) { new Notice(`Screenshot helper unavailable. Start helper/server.mjs separately. ${e instanceof Error ? e.message : 'connection error'}`); } }
   private async capturePage(url: string): Promise<ArrayBuffer> {
-    const response = await requestUrl({ url: `${this.settings.rendererEndpoint.replace(/\/$/, '')}/screenshot`, method: 'POST', body: JSON.stringify({ url }), headers: { 'content-type': 'application/json' } });
-    if (response.status < 200 || response.status >= 300) throw new Error(`renderer returned ${response.status}`);
-    return response.arrayBuffer;
+    const electron = typeof require === 'function' ? require('electron') : null;
+    const BrowserWindow = electron?.BrowserWindow;
+    if (!BrowserWindow) throw new Error('Obsidian did not expose the desktop capture API');
+    const win = new BrowserWindow({ show: false, width: 1200, height: 800, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
+    try { await win.loadURL(url, { timeout: 20000 }); await new Promise(resolve => setTimeout(resolve, 1200)); const image = await win.webContents.capturePage({ x: 0, y: 0, width: 1200, height: 800 }); return image.toPNG().buffer; }
+    finally { if (!win.isDestroyed()) win.destroy(); }
   }
 
   private async renderCards(el: HTMLElement, ctx: any) {
@@ -68,5 +70,5 @@ export default class LinkPreviewsPlugin extends Plugin {
 }
 class LinkPreviewSettings extends PluginSettingTab {
   constructor(app: App, private plugin: LinkPreviewsPlugin) { super(app, plugin); }
-  display() { this.containerEl.empty(); this.containerEl.createEl('h2', { text: 'Link Previews' }); new Setting(this.containerEl).setName('Screenshot helper endpoint').setDesc('Optional helper; the plugin does not start it. Start helper/server.mjs separately, then use Test screenshot helper connection. Desktop only.').addText(t => t.setValue(this.plugin.settings.rendererEndpoint).onChange(async value => { this.plugin.settings.rendererEndpoint = value.trim(); await this.plugin.saveData(this.plugin.settings); })); new Setting(this.containerEl).setName('Attachment folder').setDesc('Vault folder for durable desktop screenshots; mobile only consumes these files.').addText(t => t.setValue(this.plugin.settings.attachmentFolder).onChange(async value => { this.plugin.settings.attachmentFolder = value.trim() || DEFAULTS.attachmentFolder; await this.plugin.saveData(this.plugin.settings); })); }
+  display() { this.containerEl.empty(); this.containerEl.createEl('h2', { text: 'Link Previews' }); new Setting(this.containerEl).setName('Attachment folder').setDesc('Vault folder for durable desktop screenshots; mobile only consumes these files.').addText(t => t.setValue(this.plugin.settings.attachmentFolder).onChange(async value => { this.plugin.settings.attachmentFolder = value.trim() || DEFAULTS.attachmentFolder; await this.plugin.saveData(this.plugin.settings); })); }
 }

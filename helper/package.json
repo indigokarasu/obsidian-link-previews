@@ -1,1 +1,0 @@
-{"name":"link-preview-screenshot-helper","private":true,"type":"module","scripts":{"start":"node server.mjs"},"dependencies":{"express":"^4.21.0","playwright":"^1.46.0"}}

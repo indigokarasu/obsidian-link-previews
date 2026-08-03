@@ -1,23 +1,19 @@
 # Link Previews
 
-An Obsidian plugin that renders OpenGraph cards for HTTP(S) links and stores durable webpage screenshots in the vault.
+Self-contained Obsidian link previews: OpenGraph cards everywhere and durable static webpage screenshots captured inside Obsidian Desktop.
 
 ## Behavior
 
-- OpenGraph metadata is fetched through Obsidian's `requestUrl` API. Parsing tolerates common meta attribute orders, quote styles, HTML entities, relative images, and title fallback.
-- **Desktop:** run **Enrich URL with webpage screenshot** with the cursor on a URL. The plugin calls the optional configured helper and stores the PNG plus a Markdown image/marker in the vault.
-- **Mobile:** screenshot generation is never attempted. Existing vault images render offline; otherwise the OpenGraph card is used.
-- No iframe, telemetry, cookies, or login state is used.
+- HTTP(S) links render an OpenGraph card using Obsidian's `requestUrl` API. Metadata parsing tolerates attribute order, quote styles, HTML entities, relative images, and `<title>` fallback.
+- **Desktop:** run **Enrich URL with webpage screenshot** with the cursor on a URL. The plugin creates a hidden Electron `BrowserWindow`, loads the page, calls the available `webContents.capturePage` API, and stores a PNG plus a normal Markdown image/marker in the vault.
+- **Mobile:** screenshot capture is never attempted. Persisted vault screenshots render offline; otherwise the OpenGraph card is used.
+- No helper process, local server, Node installation, configurable endpoint, iframe, telemetry, cookies, or login state is required.
 
-## Screenshot helper
+## Limitations and failure behavior
 
-The plugin does **not** start the helper automatically. Start it separately:
+Capture is desktop-only and depends on Obsidian exposing a compatible Electron `BrowserWindow`/`capturePage` runtime. If that API is unavailable, navigation fails, or the page cannot load, the plugin shows a notice and leaves the original link and OpenGraph fallback intact. This is not universal webpage rendering support. Pages requiring authentication, unusual browser APIs, or blocking automation may not capture correctly.
 
-```sh
-cd helper && npm install && npx playwright install chromium && npm start
-```
-
-It listens on `127.0.0.1:8765`, provides `GET /health`, and accepts `POST /screenshot` with `{ "url": "https://example.com" }`. It blocks private targets and unsafe redirects. Configure the endpoint in **Settings → Link Previews**, then run **Test screenshot helper connection**. If unavailable, screenshot enrichment shows an actionable notice and OpenGraph cards continue to work.
+Screenshots are explicit actions, not generated on every note open. Review remote pages before capturing them; the hidden window uses Node integration disabled and context isolation enabled.
 
 ## Development
 
@@ -28,4 +24,4 @@ npm run build
 npm test
 ```
 
-The generated `main.js` is the installable plugin bundle and is intentionally committed.
+`main.js` is the committed installable bundle. Releases include `manifest.json`, `main.js`, and `styles.css`.
