@@ -1,4 +1,6 @@
 import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Platform, requestUrl, Setting, TFile } from 'obsidian';
+import { Decoration, EditorView, ViewPlugin, ViewUpdate, WidgetType } from '@codemirror/view';
+import { RangeSetBuilder } from '@codemirror/state';
 import { OpenGraphMetadata, parseOpenGraph } from './opengraph';
 
 declare const require: ((name: string) => any) | undefined;
@@ -16,6 +18,36 @@ function markerInfo(content: string, url: string): { image: string; captured: nu
   return { image: match[1], captured: Number.isFinite(captured) ? captured : 0 };
 }
 
+class PreviewWidget extends WidgetType {
+  constructor(private readonly plugin: LinkPreviewsPlugin, private readonly url: string, private readonly file: TFile | null) { super(); }
+  eq(other: PreviewWidget) { return other.url === this.url; }
+  toDOM() {
+    const el = document.createElement('div'); el.className = 'link-preview-card link-preview-live';
+    const title = document.createElement('a'); title.className = 'link-preview-title'; title.href = this.url; title.textContent = 'Webpage preview'; el.appendChild(title);
+    void this.plugin.populateLiveCard(el, this.url, this.file);
+    return el;
+  }
+  ignoreEvent() { return false; }
+}
+
+class LivePreviewPreviews {
+  decorations: any;
+  constructor(private readonly view: EditorView, private readonly plugin: LinkPreviewsPlugin) { this.decorations = this.build(); }
+  update(update: ViewUpdate) { if (update.docChanged || update.viewportChanged || update.selectionSet) this.decorations = this.build(); }
+  build() {
+    const builder = new RangeSetBuilder<any>();
+    for (const { from, to } of this.view.visibleRanges) {
+      const text = this.view.state.sliceDoc(from, to);
+      const re = /https?:\/\/[^\s)>]+/gi; let match: RegExpExecArray | null;
+      while ((match = re.exec(text))) {
+        const url = match[0].replace(/[.,;]+$/, ''); const pos = from + match.index + url.length;
+        builder.add(pos, pos, Decoration.widget({ widget: new PreviewWidget(this.plugin, url, null), side: 1 }));
+      }
+    }
+    return builder.finish();
+  }
+}
+
 export default class LinkPreviewsPlugin extends Plugin {
   settings!: Settings;
   private captures = new Map<string, Promise<string>>();
@@ -25,6 +57,10 @@ export default class LinkPreviewsPlugin extends Plugin {
     this.addCommand({ id: 'enrich-url-screenshot', name: 'Enrich URL with webpage screenshot', editorCallback: (editor, view) => void this.enrich(editor, view as MarkdownView) });
     this.addCommand({ id: 'refresh-url-screenshot', name: 'Refresh URL screenshot', editorCallback: (editor, view) => void this.enrich(editor, view as MarkdownView, true) });
     this.registerMarkdownPostProcessor((el, ctx) => this.renderCards(el, ctx));
+    const plugin = this;
+    this.registerEditorExtension(ViewPlugin.fromClass(class extends LivePreviewPreviews {
+      constructor(view: EditorView) { super(view, plugin); }
+    }));
   }
 
   private async enrich(editor: Editor, view: MarkdownView, refresh = false) {
@@ -74,6 +110,21 @@ export default class LinkPreviewsPlugin extends Plugin {
       if (!Platform.isMobile && file instanceof TFile) void this.captureAndPersist(url, file).then(image => this.replaceCard(anchor, url, image)).catch(() => undefined);
     }
   }
+  async populateLiveCard(el: HTMLElement, url: string, file: TFile | null) {
+    try {
+      const meta = await this.fetchOg(url);
+      const title = el.querySelector('.link-preview-title') as HTMLAnchorElement | null;
+      if (title) title.textContent = meta.title || 'Webpage preview';
+      if (meta.description) el.createEl('p', { text: meta.description, cls: 'link-preview-description' });
+      const note = file || this.app.workspace.getActiveViewOfType(MarkdownView)?.file || null;
+      if (!Platform.isMobile && note) {
+        const image = await this.captureAndPersist(url, note);
+        const imageFile = this.app.vault.getAbstractFileByPath(image);
+        if (imageFile instanceof TFile) el.createEl('img', { attr: { src: this.app.vault.getResourcePath(imageFile), alt: 'Webpage screenshot' } });
+      } else if (meta.image) el.createEl('img', { attr: { src: meta.image, alt: '' } });
+    } catch { /* The link remains usable when metadata/capture is unavailable. */ }
+  }
+
   private async fetchOg(url: string): Promise<OpenGraphMetadata> { const response = await requestUrl({ url, method: 'GET' }); return parseOpenGraph(response.text, url); }
   private replaceCard(anchor: HTMLAnchorElement, url: string, image: string) { const card = anchor.parentElement?.querySelector('.link-preview-card'); if (card) { card.empty(); this.card(anchor, url, image); } }
   private card(anchor: HTMLAnchorElement, url: string, image?: string, meta?: OpenGraphMetadata) {
