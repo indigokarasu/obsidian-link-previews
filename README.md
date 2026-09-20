@@ -1,5 +1,7 @@
 # Link Previews
 
+![Link Previews](assets/readme/hero.svg)
+
 Self-contained Obsidian link previews: OpenGraph cards everywhere and durable static webpage screenshots captured inside Obsidian Desktop.
 
 ## Behavior
